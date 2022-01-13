@@ -37,13 +37,15 @@ import {
   WhatsApp,
   WhatsappContact,
   WhatsappMessage,
-}                   from './whatsapp.js'
+} from './whatsapp.js'
 import WAWebJS, { ClientOptions, GroupChat, MessageContent } from 'whatsapp-web.js'
 import { parseVcard } from './pure-function-helpers/vcard-parser.js'
 import { Manager } from './work/manager.js'
 import WAError from './pure-function-helpers/error-type.js'
 import { WXWORK_ERROR_TYPE } from './schema/error-type.js'
 import type WhatsAppRaw from './schema/index.js'
+import { readFile, writeFile } from 'fs'
+import path from 'path'
 
 process.on('uncaughtException', (e) => {
   console.error('process error is:', e.message)
@@ -62,7 +64,7 @@ class PuppetWhatsapp extends PUPPET.Puppet {
   private messageStore: { [id: string]: WhatsappMessage }
   private contactStore: { [id: string]: WhatsappContact }
   private roomStore: { [id: string]: WhatsappContact }
-  private roomInvitationStore: { [id: string]: Partial<WAWebJS.InviteV4Data>}
+  private roomInvitationStore: { [id: string]: Partial<WAWebJS.InviteV4Data> }
   private whatsapp: undefined | WhatsApp
   private manager: undefined | Manager
 
@@ -79,14 +81,34 @@ class PuppetWhatsapp extends PUPPET.Puppet {
 
   }
 
-  override async start (): Promise<void> {
+  override async start (noUseSession: boolean = false): Promise<void> {
     log.verbose('PuppetWhatsApp', 'onStart()')
+    console.info(this.state.on())
     if (this.state.on()) {
       await this.state.ready('on')
       return
     }
-    const session = await this.memory.get(MEMORY_SLOT)
-    const whatsapp = await getWhatsApp(this.options['puppeteerOptions'] as ClientOptions, session)
+
+    const SESSION_FILE_PATH = './session.json'
+    const sessionData = await new Promise<any>((resolve, reject) => {
+      readFile(SESSION_FILE_PATH, 'utf-8', (err, data) => {
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+        if (err) {
+          reject(err)
+        }
+        resolve(data)
+      })
+    })
+    console.info(`---- ${sessionData}`)
+    // const session = await this.memory.get(MEMORY_SLOT)
+    // const session = {
+    //   WABrowserId: 'invalid',
+    //   WASecretBundle: 'invalid',
+    //   WAToken1: 'invalid',
+    //   WAToken2: 'invalid',
+    // }
+    const whatsapp = await getWhatsApp(this.options['puppeteerOptions'] as ClientOptions, noUseSession ? undefined : JSON.parse(sessionData))
+    // const whatsapp = await getWhatsApp(this.options['puppeteerOptions'] as ClientOptions, undefined)
     this.whatsapp = whatsapp
     this.manager = new Manager(whatsapp)
     this.state.on('pending')
@@ -152,6 +174,12 @@ class PuppetWhatsapp extends PUPPET.Puppet {
 
     whatsapp.on('authenticated', session => {
       (async () => {
+        const SESSION_FILE_PATH = './session.json'
+        writeFile(SESSION_FILE_PATH, JSON.stringify(session), (err) => {
+          if (err) {
+            console.error(err)
+          }
+        })
         try {
           // save session file
           await this.memory.set(MEMORY_SLOT, session)
@@ -172,8 +200,10 @@ class PuppetWhatsapp extends PUPPET.Puppet {
       // msg -> auth_failure message
       // auth_failure due to session invalidation
       // clear sessionData -> reinit
+      // set state off
+      this.state.off(true)
       await this.memory.delete(MEMORY_SLOT)
-      await this.start()
+      await this.start(true)
     })
 
     whatsapp.on('ready', () => {
@@ -220,10 +250,10 @@ class PuppetWhatsapp extends PUPPET.Puppet {
               // TODO:
             }
           } else {
-            this.emit('message', { messageId : msg.id.id })
+            this.emit('message', { messageId: msg.id.id })
           }
         } else {
-          this.emit('message', { messageId : msg.id.id })
+          this.emit('message', { messageId: msg.id.id })
         }
 
       } else {
@@ -245,16 +275,16 @@ class PuppetWhatsapp extends PUPPET.Puppet {
 
     whatsapp.on('qr', (qr) => {
       // NOTE: This event will not be fired if a session is specified.
-      this.emit('scan', { qrcode : qr, status : PUPPET.ScanStatus.Waiting })
+      this.emit('scan', { qrcode: qr, status: PUPPET.ScanStatus.Waiting })
     })
 
     whatsapp.on('group_join', noti => {
       (async () => {
         const roomJoinPayload: PUPPET.EventRoomJoinPayload = {
-          inviteeIdList : noti.recipientIds,
-          inviterId     : noti.author,
-          roomId        : noti.chatId,
-          timestamp     : noti.timestamp,
+          inviteeIdList: noti.recipientIds,
+          inviterId: noti.author,
+          roomId: noti.chatId,
+          timestamp: noti.timestamp,
         }
         this.emit('room-join', roomJoinPayload)
       })().catch(console.error)
@@ -263,10 +293,10 @@ class PuppetWhatsapp extends PUPPET.Puppet {
     whatsapp.on('group_leave', noti => {
       (async () => {
         const roomJoinPayload: PUPPET.EventRoomLeavePayload = {
-          removeeIdList : noti.recipientIds,
-          removerId     : noti.author,
-          roomId        : noti.chatId,
-          timestamp     : noti.timestamp,
+          removeeIdList: noti.recipientIds,
+          removerId: noti.author,
+          roomId: noti.chatId,
+          timestamp: noti.timestamp,
         }
         this.emit('room-leave', roomJoinPayload)
       })().catch(console.error)
@@ -277,11 +307,11 @@ class PuppetWhatsapp extends PUPPET.Puppet {
         if (noti.type === WAWebJS.GroupNotificationTypes.SUBJECT) {
           const oldRoom = this.roomStore[noti.chatId]
           const roomJoinPayload: PUPPET.EventRoomTopicPayload = {
-            changerId : noti.author,
-            newTopic  : noti.body,
-            oldTopic  : oldRoom?.name || '',
-            roomId    : noti.chatId,
-            timestamp : noti.timestamp,
+            changerId: noti.author,
+            newTopic: noti.body,
+            oldTopic: oldRoom?.name || '',
+            roomId: noti.chatId,
+            timestamp: noti.timestamp,
           }
           this.emit('room-topic', roomJoinPayload)
         }
@@ -297,7 +327,7 @@ class PuppetWhatsapp extends PUPPET.Puppet {
     const eventStreams = events.map((event) => fromEvent(whatsapp, event).pipe(map((value: any) => ({ event, value }))))
     const allEvents$ = merge(...eventStreams)
 
-    allEvents$.pipe(distinctUntilKeyChanged('event')).subscribe(({ event, value } : {event:string, value:any}) => {
+    allEvents$.pipe(distinctUntilKeyChanged('event')).subscribe(({ event, value }: { event: string, value: any }) => {
       if (event === 'disconnected' && value as string === 'NAVIGATION') {
         void this.logout(value as string)
       }
@@ -334,8 +364,8 @@ class PuppetWhatsapp extends PUPPET.Puppet {
    * Contact
    *
    */
-  override contactAlias (contactId: string)                      : Promise<string>
-  override contactAlias (contactId: string, alias: string | null): Promise<void>
+  override contactAlias(contactId: string): Promise<string>
+  override contactAlias(contactId: string, alias: string | null): Promise<void>
 
   override async contactAlias (contactId: string, alias?: string | null): Promise<void | string> {
     log.verbose('PuppetWhatsApp', 'contactAlias(%s, %s)', contactId, alias)
@@ -345,8 +375,8 @@ class PuppetWhatsapp extends PUPPET.Puppet {
     }
   }
 
-  override async contactPhone (contactId: string): Promise<string[]>
-  override async contactPhone (contactId: string, phoneList: string[]): Promise<void>
+  override async contactPhone(contactId: string): Promise<string[]>
+  override async contactPhone(contactId: string, phoneList: string[]): Promise<void>
 
   override async contactPhone (contactId: string, phoneList?: string[]): Promise<string[] | void> {
     log.verbose('PuppetWhatsApp', 'contactPhone(%s, %s)', contactId, phoneList)
@@ -372,8 +402,8 @@ class PuppetWhatsapp extends PUPPET.Puppet {
     return Object.keys(this.contactStore)
   }
 
-  override async contactAvatar (contactId: string)                : Promise<FileBox>
-  override async contactAvatar (contactId: string, file: FileBox) : Promise<void>
+  override async contactAvatar(contactId: string): Promise<FileBox>
+  override async contactAvatar(contactId: string, file: FileBox): Promise<void>
 
   override async contactAvatar (contactId: string, file?: FileBox): Promise<void | FileBox> {
     log.verbose('PuppetWhatsApp', 'contactAvatar(%s)', contactId)
@@ -398,14 +428,14 @@ class PuppetWhatsapp extends PUPPET.Puppet {
     }
 
     return {
-      avatar : await whatsAppPayload.getProfilePicUrl(),
+      avatar: await whatsAppPayload.getProfilePicUrl(),
       friend: whatsAppPayload.isWAContact && whatsAppPayload.isUser && !whatsAppPayload.isMe,
-      gender : PUPPET.ContactGender.Unknown,
-      id     : whatsAppPayload.id._serialized,
-      name   : !whatsAppPayload.isMe ? whatsAppPayload.pushname : whatsAppPayload.pushname || this.whatsapp?.info.pushname || '',
-      phone : [whatsAppPayload.number],
-      type   : type,
-      weixin : whatsAppPayload.number,
+      gender: PUPPET.ContactGender.Unknown,
+      id: whatsAppPayload.id._serialized,
+      name: !whatsAppPayload.isMe ? whatsAppPayload.pushname : whatsAppPayload.pushname || this.whatsapp?.info.pushname || '',
+      phone: [whatsAppPayload.number],
+      type: type,
+      weixin: whatsAppPayload.number,
     }
   }
 
@@ -428,7 +458,7 @@ class PuppetWhatsapp extends PUPPET.Puppet {
   override async conversationReadMark (
     conversationId: string,
     hasRead?: boolean,
-  ) : Promise<void | boolean> {
+  ): Promise<void | boolean> {
     log.verbose('PuppetWhatsApp', 'conversationReadMark(%s, %s)', conversationId, hasRead)
     return PUPPET.throwUnsupportedError()
   }
@@ -638,12 +668,12 @@ class PuppetWhatsapp extends PUPPET.Puppet {
         break
     }
     return {
-      fromId        : whatsAppPayload.from,
-      id            : whatsAppPayload.id.id,
-      mentionIdList : whatsAppPayload.mentionedIds,
-      text          : whatsAppPayload.body,
-      timestamp     : Date.now(),
-      toId          : whatsAppPayload.to,
+      fromId: whatsAppPayload.from,
+      id: whatsAppPayload.id.id,
+      mentionIdList: whatsAppPayload.mentionedIds,
+      text: whatsAppPayload.body,
+      timestamp: Date.now(),
+      toId: whatsAppPayload.to,
       type,
       // filename
     }
@@ -662,11 +692,11 @@ class PuppetWhatsapp extends PUPPET.Puppet {
   override async roomRawPayloadParser (whatsAppPayload: WhatsappContact): Promise<PUPPET.RoomPayload> {
     const chat = await this.whatsapp?.getChatById(whatsAppPayload.id._serialized) as GroupChat
     return {
-      adminIdList:chat.participants.filter(p => p.isAdmin || p.isSuperAdmin).map(p => p.id._serialized),
-      avatar : await whatsAppPayload.getProfilePicUrl(),
-      id     : whatsAppPayload.id._serialized,
+      adminIdList: chat.participants.filter(p => p.isAdmin || p.isSuperAdmin).map(p => p.id._serialized),
+      avatar: await whatsAppPayload.getProfilePicUrl(),
+      id: whatsAppPayload.id._serialized,
       memberIdList: chat.participants.map(p => p.id._serialized),
-      topic   : whatsAppPayload.name || whatsAppPayload.pushname || '',
+      topic: whatsAppPayload.name || whatsAppPayload.pushname || '',
     }
   }
 
@@ -687,8 +717,8 @@ class PuppetWhatsapp extends PUPPET.Puppet {
   }
 
   override async roomDel (
-    roomId    : string,
-    contactId : string,
+    roomId: string,
+    contactId: string,
   ): Promise<void> {
     log.verbose('PuppetWhatsApp', 'roomDel(%s, %s)', roomId, contactId)
     const chat = await this.whatsapp?.getChatById(roomId) as GroupChat
@@ -708,16 +738,16 @@ class PuppetWhatsapp extends PUPPET.Puppet {
   }
 
   override async roomAdd (
-    roomId    : string,
-    contactId : string,
+    roomId: string,
+    contactId: string,
   ): Promise<void> {
     log.verbose('PuppetWhatsApp', 'roomAdd(%s, %s)', roomId, contactId)
     const chat = await this.whatsapp?.getChatById(roomId) as GroupChat
     await chat.addParticipants([contactId])
   }
 
-  override async roomTopic (roomId: string)                : Promise<string>
-  override async roomTopic (roomId: string, topic: string) : Promise<void>
+  override async roomTopic(roomId: string): Promise<string>
+  override async roomTopic(roomId: string, topic: string): Promise<void>
 
   override async roomTopic (
     roomId: string,
@@ -736,8 +766,8 @@ class PuppetWhatsapp extends PUPPET.Puppet {
   }
 
   override async roomCreate (
-    contactIdList : string[],
-    topic         : string,
+    contactIdList: string[],
+    topic: string,
   ): Promise<string> {
     log.verbose('PuppetWhatsApp', 'roomCreate(%s, %s)', contactIdList, topic)
     const group = await this.whatsapp?.createGroup(topic, contactIdList)
@@ -756,39 +786,39 @@ class PuppetWhatsapp extends PUPPET.Puppet {
 
   override async roomQRCode (roomId: string): Promise<string> {
     log.verbose('PuppetWhatsApp', 'roomQRCode(%s)', roomId)
-    const con = await this.whatsapp!.getChatById(roomId)as GroupChat
+    const con = await this.whatsapp!.getChatById(roomId) as GroupChat
     const code = await con.getInviteCode()
     const url = `https://chat.whatsapp.com/${code}`
     return url
   }
 
-  override async roomMemberList (roomId: string) : Promise<string[]> {
+  override async roomMemberList (roomId: string): Promise<string[]> {
     log.verbose('PuppetWhatsApp', 'roomMemberList(%s)', roomId)
     const chat = await this.whatsapp?.getChatById(roomId) as GroupChat
     return chat.participants.map(p => p.id._serialized)
   }
 
-  override async roomMemberRawPayload (roomId: string, contactId: string): Promise<PUPPET.RoomMemberPayload>  {
+  override async roomMemberRawPayload (roomId: string, contactId: string): Promise<PUPPET.RoomMemberPayload> {
     log.verbose('PuppetWhatsApp', 'roomMemberRawPayload(%s, %s)', roomId, contactId)
     const contact = await this.whatsapp!.getContactById(contactId)
     const avatar = await contact.getProfilePicUrl()
     return {
       avatar,
-      id        : contact.id._serialized,
-      name      : contact.pushname || contact.name || '',
+      id: contact.id._serialized,
+      name: contact.pushname || contact.name || '',
       // roomAlias : contact.name,
     }
   }
 
-  override async roomMemberRawPayloadParser (rawPayload: PUPPET.RoomMemberPayload): Promise<PUPPET.RoomMemberPayload>  {
+  override async roomMemberRawPayloadParser (rawPayload: PUPPET.RoomMemberPayload): Promise<PUPPET.RoomMemberPayload> {
     log.verbose('PuppetWhatsApp', 'roomMemberRawPayloadParser(%O)', rawPayload)
     return rawPayload
   }
 
-  override async roomAnnounce (roomId: string)                : Promise<string>
-  override async roomAnnounce (roomId: string, text: string)  : Promise<void>
+  override async roomAnnounce(roomId: string): Promise<string>
+  override async roomAnnounce(roomId: string, text: string): Promise<void>
 
-  override async roomAnnounce (roomId: string, text?: string) : Promise<void | string> {
+  override async roomAnnounce (roomId: string, text?: string): Promise<void | string> {
     return PUPPET.throwUnsupportedError()
   }
 
@@ -847,14 +877,14 @@ class PuppetWhatsapp extends PUPPET.Puppet {
   }
 
   override async friendshipAdd (
-    contactId : string,
-    hello     : string,
+    contactId: string,
+    hello: string,
   ): Promise<void> {
     log.verbose('PuppetWhatsApp', 'friendshipAdd(%s, %s)', contactId, hello)
   }
 
   override async friendshipAccept (
-    friendshipId : string,
+    friendshipId: string,
   ): Promise<void> {
     log.verbose('PuppetWhatsApp', 'friendshipAccept(%s)', friendshipId)
   }
